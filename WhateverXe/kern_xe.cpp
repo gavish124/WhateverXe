@@ -1,3 +1,5 @@
+#include <kern/thread_call.h>
+#include <kern/clock.h>
 #include "kern_display13_color.hpp"
 #include <mach/clock.h>
 #include <IOKit/IOMessage.h>
@@ -13889,7 +13891,82 @@ uint32_t XE::wrapADLSLightUpEDP(void *controller,void *fb,void *path,const void 
 }
 uint32_t XE::wrapADLSPanelBacklight(void *controller,uint32_t brightness) {
  auto s=callbackXE;
- if(s->display13FramebufferRequested && s->adlnOutputWiring.panel)return display13PanelBrightness(controller,brightness);
+ if(s->display13FramebufferRequested && s->adlnOutputWiring.panel) {
+  // Optional backlight smoother, like WhateverGreen's. Enabled by the -wex-bls boot argument or the
+  // enable-backlight-smoother IGPU property. Tunables (4-byte Data, same names as WhateverGreen; threshold and bounds
+  // are on the 0..65535 brightness scale): backlight-smoother-steps (35), -interval (7 ms), -threshold (0),
+  // -lowerbound (0), -upperbound (65535). The call never blocks: a thread call moves the panel toward the latest
+  // target in strides of ceil(distance/steps).
+  struct Cfg {volatile UInt32 state;bool on;uint32_t steps,interval,threshold,lower,upper;};
+  static Cfg c;
+  if(c.state!=2) {
+    if(OSCompareAndSwap(0,1,&c.state)) {
+      uint32_t v=0;IORegistryEntry *dev=s->igpu;
+      c.on=checkKernelArgument("-wex-bls");
+      c.steps=35;c.interval=7;c.threshold=0;c.lower=0;c.upper=65535;
+      if(dev) {
+        if(!c.on && WIOKit::getOSDataValue(dev,"enable-backlight-smoother",v))c.on=v!=0;
+        if(WIOKit::getOSDataValue(dev,"backlight-smoother-steps",v) && v>=1 && v<=200)c.steps=v;
+        if(WIOKit::getOSDataValue(dev,"backlight-smoother-interval",v) && v>=1 && v<=50)c.interval=v;
+        if(WIOKit::getOSDataValue(dev,"backlight-smoother-threshold",v))c.threshold=v;
+        if(WIOKit::getOSDataValue(dev,"backlight-smoother-lowerbound",v))c.lower=v>65535?65535:v;
+        if(WIOKit::getOSDataValue(dev,"backlight-smoother-upperbound",v))c.upper=v>65535?65535:v;
+        if(c.lower>c.upper){c.lower=0;c.upper=65535;}
+      }
+      c.state=2;
+    } else while(c.state!=2)IOSleep(1);
+  }
+  if(!c.on || brightness>65535)return display13PanelBrightness(controller,brightness);
+  struct Bls {volatile UInt32 state;IOLock *lock;thread_call_t call;void *controller;uint32_t cur,to,stride,fails,okSteps,badSteps;bool active,have;};
+  static Bls b;
+  if(b.state!=2) {
+    if(OSCompareAndSwap(0,1,&b.state)) {
+      b.lock=IOLockAlloc();
+      if(b.lock)b.call=thread_call_allocate([](thread_call_param_t,thread_call_param_t) {
+        IOLockLock(b.lock);
+        if(!b.active){IOLockUnlock(b.lock);return;}
+        const uint32_t from=b.cur;
+        const uint32_t v=b.to>from?(b.to-from>b.stride?from+b.stride:b.to):(from-b.to>b.stride?from-b.stride:b.to);
+        void *ctl=b.controller;
+        IOLockUnlock(b.lock);
+        const bool ok=v==from || XE::display13PanelBrightness(ctl,v)==0;
+        IOLockLock(b.lock);
+        if(ok)b.cur=v;
+        if(ok){b.fails=0;b.okSteps++;}else{b.fails++;b.badSteps++;}
+        if(b.cur==b.to || b.fails>=50)b.active=false;
+        else {uint64_t dl;clock_interval_to_deadline(c.interval,1000000,&dl);thread_call_enter_delayed(b.call,dl);}
+        const bool report=!b.active || !ok;const uint64_t stat=(uint64_t(b.okSteps)<<32)|b.badSteps;const uint32_t shown=b.cur;
+        IOLockUnlock(b.lock);
+        if(report){IORegistryEntry::getRegistryRoot()->setProperty("WEXBLSSteps",stat,64);IORegistryEntry::getRegistryRoot()->setProperty("WEXBLSCurrent",uint64_t(shown),32);}
+      },nullptr);
+      b.state=(b.lock && b.call)?2:3;
+    } else while(b.state==1)IOSleep(1);
+  }
+  if(b.state!=2)return display13PanelBrightness(controller,brightness);
+  const uint32_t target=brightness<c.lower?c.lower:(brightness>c.upper?c.upper:brightness);
+  IOLockLock(b.lock);
+  b.controller=controller;
+  if(!b.have) {
+    IOLockUnlock(b.lock);
+    const auto r=display13PanelBrightness(controller,target);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXBLSFirst",uint64_t(r)|(uint64_t(target)<<32),64);
+    if(r==0){IOLockLock(b.lock);b.cur=target;b.to=target;b.have=true;IOLockUnlock(b.lock);}
+    return r;
+  }
+  if(b.active && target==b.to){IOLockUnlock(b.lock);return 0;}
+  if(!b.active && target==b.cur) {
+    // Same value again: the panel may have been reset since the last write, so write it through.
+    IOLockUnlock(b.lock);
+    return display13PanelBrightness(controller,target);
+  }
+  const uint32_t d=target>b.cur?target-b.cur:b.cur-target;
+  uint32_t stride=(c.threshold && d<c.threshold)?d:(d+c.steps-1)/c.steps;
+  if(stride<1)stride=1;
+  b.to=target;b.stride=stride;
+  if(!b.active){b.active=true;b.fails=0;uint64_t dl;clock_interval_to_deadline(c.interval,1000000,&dl);thread_call_enter_delayed(b.call,dl);}
+  IOLockUnlock(b.lock);
+  return 0;
+}
  if(!s->adlsDisplaySelected || !s->adlsWiring.panel)
   return FunctionCast(wrapADLSPanelBacklight,s->orgADLSPanelBacklight)(controller,brightness);
  void *access,*power;uint32_t duty;

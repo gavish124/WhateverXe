@@ -50,6 +50,7 @@ namespace XELP { namespace DSI { struct Profile; } }
 
 class XE {
 public:
+    IORegistryEntry *igpu {};
 	void init();
     void captureFirmware(IOPCIDevice *,const XELP::Profile &);
     void selectProfile(const XELP::Profile &profile);
