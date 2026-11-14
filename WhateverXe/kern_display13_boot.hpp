@@ -187,7 +187,7 @@ template<class IO> Result normalize(IO &io,const AlderLakeN::DisplayReadout &boo
         if(!AlderLakeN::bootGeometry(boot,p,geometry,ht,vt) || uint64_t(surface)+geometry.bytes>memory.usable())return r;
         const auto clock=0x46140+4*p,buf=0x64000+0x100*port;
         if(!io.readable(clock) || !io.readable(buf) || !(io.read(buf)&0x80000000) ||
-           !io.readable(0x60404+bank) || io.read(0x60404+bank))return r;
+           !io.readable(0x60404+bank) || (io.read(0x60404+bank)&~8U))return r;
         clocks[p]=io.read(clock);
         if(clocks[p]==UINT32_MAX || (clocks[p]>>28)!=port+(port>=3?3:1))return r;
     }
