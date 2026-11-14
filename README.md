@@ -1,5 +1,8 @@
 # WhateverXe
 
+> [!NOTE]
+> This fork of WhateverXe makes modifications to the original code to improve compatibility with the Alder Lake generation of Surface devices. This fork may work on other non-Surface devices containing Alder Lake processors or other hardware generations. For more information, please read [this document](https://github.com/gavish124/WhateverXe/blob/ADL-Surface-Optimized/docs/ADL-Surface-Optimized-WEX-fork-notes.md) which explains the changes and provides instructions for this specific fork.
+
 [日本語](README_ja.md)
 
 WhateverXe is a Lilu plugin, derived from WhateverGreen, that adapts Apple graphics drivers for selected Intel Xe-LP integrated GPUs.
