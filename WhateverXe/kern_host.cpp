@@ -72,6 +72,7 @@ void XeHost::processKernel(KernelPatcher &patcher) {
   display==XELP::DisplayAdapter::ADLP || display==XELP::DisplayAdapter::ADLN) &&
   info->firmwareVendor!=DeviceInfo::FirmwareVendor::Apple;
  backlightGPU=backlightEnabled ? gpu : nullptr;
+xe.igpu=backlightGPU;
  if(published) {
   uint32_t selection[] {1,profile.identity,profile.revision,profile.effectiveIdentity,
    static_cast<uint32_t>(profile.family),static_cast<uint32_t>(profile.display),
